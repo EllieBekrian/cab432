@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Login - CAB432</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <nav>
+        <ul>
+            <li><a href="/">Home</a></li>
+            <li><a href="/admin">Admin Panel</a></li>
+            <li><a href="/upload">Upload</a></li>
+            <li><a href="/register">Register</a></li>
+            <li><a href="/login">Login</a></li>
+            <li><a href="/logout">Logout</a></li>
+        </ul>
+    </nav>
+    
+    <div class="container">
+        <h1 id="form-title">Login</h1>
+        
+        <form id="loginForm" method="POST" class="form-control">
+            <input type="text" name="username" id="login-username" placeholder="Email" required class="input-field">
+            <input type="password" name="password" id="login-password" placeholder="Password" required class="input-field">
+            <input type="submit" value="Login" class="btn">
+        </form>
+        
+        <p id="error-message" class="error-message" style="display:none; color:red;">Invalid credentials. Please try again.</p>
+    </div>
+
+    <script>
+        const loginForm = document.getElementById('loginForm');
+        const errorMessage = document.getElementById('error-message');
+
+        loginForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            errorMessage.style.display = 'none';
+
+            const loginData = {
+                username: document.getElementById('login-username').value,
+                password: document.getElementById('login-password').value
+            };
+
+            fetch('/api/v1/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(loginData),
+                credentials: 'include'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.authToken) {
+                    window.location.href = '/index.html';
+                } else {
+                    errorMessage.textContent = data.error || "Invalid credentials.";
+                    errorMessage.style.display = 'block';
+                }                
+            })
+            .catch(() => {
+                errorMessage.textContent = 'An error occurred during login. Please try again.';
+                errorMessage.style.display = 'block';
+            });
+        });        
+    </script>
+</body>
+</html>
