@@ -45,3 +45,7 @@ aws/
 # Keypairs
 keyPair/
 *.zip
+
+# Local runtime
+.env
+out.log
