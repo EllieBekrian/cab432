@@ -66,63 +66,71 @@ router.post('/login', loginLimiter, async (req, res) => {
 
 // Registration Route
 router.post('/register', loginLimiter, async (req, res) => {
-  const { username, password } = req.body;
+  const { email, password, username } = req.body;
+  // بعضی فرم‌ها فیلد را با نام username می‌فرستند، هر دو را پشتیبانی کنیم
+  const user = email || username;
+
+  if (!user || !password) {
+    return res.status(400).json({ ok: false, code: "BadRequest", message: "Email and password are required." });
+  }
 
   try {
-    const config = await loadConfig();
-    const cognitoClient = new CognitoIdentityProviderClient({
-      region: config.awsRegion, // credentials via IAM Role on EC2
-    });
+    const client = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
 
     const params = {
-      ClientId: config.cognitoClientId,
-      Username: username,
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      Username: user,
       Password: password,
-      UserAttributes: [
-        {
-          Name: 'email',
-          Value: username,
-        },
-      ],
+      UserAttributes: [{ Name: "email", Value: user }]
     };
 
-    const command = new SignUpCommand(params);
-    await cognitoClient.send(command);
+    const out = await client.send(new SignUpCommand(params));
 
-    res.json({
-      message: 'Registration successful. Please check your email for the confirmation code.',
+    // نکته: در 99% موارد UserConfirmed=false و ایمیل کد ارسال می‌شود.
+    return res.status(200).json({
+      ok: true,
+      userConfirmed: out.UserConfirmed === true,
+      message: out.UserConfirmed
+        ? "Registered & confirmed."
+        : "Verification code sent to your email.",
     });
   } catch (err) {
-    console.error('Registration error:', err);
-    res.status(400).json({ error: err.message || 'Registration failed' });
+    // خطاهای روتین مثل UsernameExistsException یا InvalidPasswordException را شفاف برگردان
+    const code = err?.name || err?.__type || "UnknownError";
+    const msg  = err?.message || "Unknown error";
+    return res.status(400).json({ ok: false, code, message: msg });
   }
 });
+
 
 // Confirm Sign-Up Route
 router.post('/confirm', async (req, res) => {
-  const { username, confirmationCode } = req.body;
+  // هم email/username و هم code/confirmationCode را پشتیبانی کن
+  const emailOrUser = req.body.email || req.body.username;
+  const code        = req.body.code || req.body.confirmationCode;
+
+  if (!emailOrUser || !code) {
+    return res.status(400).json({ ok: false, code: "BadRequest", message: "Email/Username and confirmation code are required." });
+  }
 
   try {
-    const config = await loadConfig();
-    const cognitoClient = new CognitoIdentityProviderClient({
-      region: config.awsRegion, // credentials via IAM Role on EC2
-    });
+    const client = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
 
     const params = {
-      ClientId: config.cognitoClientId,
-      Username: username,
-      ConfirmationCode: confirmationCode,
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      Username: emailOrUser,
+      ConfirmationCode: code,
     };
 
-    const command = new ConfirmSignUpCommand(params);
-    await cognitoClient.send(command);
-
-    res.status(200).json({ message: 'Verification successful. You can now log in.' });
-  } catch (error) {
-    console.error('Verification error:', error);
-    res.status(400).json({ error: 'Verification failed. Please try again.' });
+    await client.send(new ConfirmSignUpCommand(params));
+    return res.json({ ok: true, message: "Email confirmed. You can log in now." });
+  } catch (err) {
+    const ecode = err?.name || err?.__type || "ConfirmFailed";
+    const msg   = err?.message || "Confirm failed";
+    return res.status(400).json({ ok: false, code: ecode, message: msg });
   }
 });
+
 
 // Admin: Fetch All Files
 router.get('/admin/files', authenticateToken, authorizeAdmin, async (req, res) => {
