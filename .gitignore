@@ -1,51 +1,26 @@
 # Node
 node_modules/
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
+yarn.lock
+package-lock.json
 
-# Env & secrets
+# Builds & cache
+dist/
+.tmp/
+.cache/
+
+# Local env & secrets
 .env
 .env.*
 *.pem
 *.key
-*.crt
 
-# OS / Editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# Local app data (do NOT commit)
-uploads/
-transcoded/
-tmp/
-temp/
+# PM2 & logs
+.pnpm-store/
 logs/
 *.log
+.pm2/
 
-# Build / coverage
-dist/
-build/
-coverage/
-.nyc_output/
-
-# Local sqlite dev DB 
-db/*.sqlite
-db/*.db
-
-# AWS helpers 
-aws/
-
-# Lint cache
-.eslintcache
-
-# Keypairs
-keyPair/
-*.zip
-
-# Local runtime
-.env
-out.log
+# OS cruft
+.DS_Store
+Thumbs.db

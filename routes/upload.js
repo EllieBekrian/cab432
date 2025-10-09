@@ -1,92 +1,77 @@
 const express = require('express');
 const router = express.Router();
-const auth = require('../auth.js');
-const {
-  saveUserActivity,
-  saveFileMetadata,
-  saveProgress,
-  getFileMetadata,
-} = require('../db/database.js');
-const { transcodeVideoWithProgress } = require('../transcode');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const { DynamoDBClient, PutItemCommand } = require('@aws-sdk/client-dynamodb');
+const { v4: uuidv4 } = require('uuid');
+const mime = require('mime-types');
 
-// Handle upload notification and kick off processing
-router.post('/', auth.authenticateToken, async (req, res) => {
-  const { fileName } = req.body;
-  const username = req.user.username;
+const REGION = process.env.AWS_REGION;
+const BUCKET = process.env.S3_BUCKET;
+const DDB_TABLE = process.env.DDB_TABLE;
+const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '1024', 10);
 
-  if (!fileName) {
-    return res.status(400).json({ error: 'File name is required.' });
-  }
+const s3 = new S3Client({ region: REGION });
+const ddb = new DynamoDBClient({ region: REGION });
 
-  // progressId را با طراحی فعلی برابر با نام فایل می‌گیریم
-  const progressId = fileName;
-
+router.post('/presign', async (req, res) => {
   try {
-    // Log user activity
-    await saveUserActivity(username, `Started processing file: ${fileName}`);
+    const { filename, contentType, size } = req.body || {};
+    if (!filename || !contentType || typeof size !== 'number') {
+      return res.status(400).json({ error: 'filename, contentType, size are required' });
+    }
 
-    const fileMetadata = {
-      fileName,
-      size: null, // اگر بعداً اندازه را داشته باشیم، مقداردهی می‌شود
-      uploadTime: new Date().toISOString(),
-      user: username,
-      progressId,
-      status: 'uploaded',
-    };
+    if (size > MAX_UPLOAD_MB * 1024 * 1024) {
+      return res.status(413).json({ error: `File too large. Max ${MAX_UPLOAD_MB} MB` });
+    }
 
-    // Save metadata + initial progress
-    await saveFileMetadata(fileMetadata);
-    await saveProgress(username, fileName, { progress: 0, status: 'started' });
+    const ext = mime.extension(contentType) || 'bin';
+    const id = uuidv4();
+    const fileKey = `uploads/${id}-${Date.now()}.${ext}`;
 
-    // Start transcoding and update progress
-    transcodeVideoWithProgress(fileName, progressId, username)
-      .then(async () => {
-        await saveProgress(username, fileName, { progress: 100, status: 'completed' });
-        await saveUserActivity(username, `Transcoding completed for file: ${fileName}`);
-        console.log(`Transcoding completed for ${fileName}`);
-      })
-      .catch(async (err) => {
-        console.error(`Transcoding failed for ${fileName}:`, err);
-        await saveProgress(username, fileName, { progress: 0, status: 'error' });
-        await saveUserActivity(username, `Transcoding failed for file: ${fileName}`);
-      });
-
-    res.status(201).json({
-      message: 'File metadata saved. Transcoding has started.',
-      fileName,
-      progressId,
+    const putCmd = new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: fileKey,
+      ContentType: contentType,
     });
+
+    const uploadUrl = await getSignedUrl(s3, putCmd, { expiresIn: 900 });
+
+    const putItem = new PutItemCommand({
+      TableName: DDB_TABLE,
+      Item: {
+        id: { S: id },
+        fileKey: { S: fileKey },
+        filename: { S: filename },
+        contentType: { S: contentType },
+        size: { N: String(size) },
+        status: { S: 'pending' },
+        createdAt: { N: String(Date.now()) },
+      },
+    });
+    await ddb.send(putItem);
+
+    res.json({ uploadUrl, fileKey, id });
   } catch (err) {
-    console.error('Error handling upload:', err);
-    res.status(500).json({ error: 'Failed to handle upload.' });
+    console.error('presign error:', err);
+    res.status(500).json({ error: 'Failed to generate presigned URL' });
   }
 });
 
-// List uploaded files and their metadata for the authenticated user
-router.get('/files', auth.authenticateToken, async (req, res) => {
-  const username = req.user.username;
-
+router.get('/download', async (req, res) => {
   try {
-    const files = await getFileMetadata(username);
-    console.log('Files retrieved for user:', username, files);
+    const { fileKey } = req.query;
+    if (!fileKey) return res.status(400).json({ error: 'fileKey required' });
 
-    if (!files || files.length === 0) {
-      return res.status(200).json({
-        message: 'No files uploaded yet.',
-        files: [],
-      });
-    }
+    const getCmd = new GetObjectCommand({ Bucket: BUCKET, Key: fileKey });
+    const url = await getSignedUrl(s3, getCmd, { expiresIn: 900 });
 
-    res.status(200).json({
-      message: 'Files fetched successfully.',
-      files,
-    });
+    res.json({ downloadUrl: url });
   } catch (err) {
-    console.error('Error fetching files:', err);
-    res.status(500).json({
-      error: 'An internal error occurred while fetching files.',
-    });
+    console.error('download presign error:', err);
+    res.status(500).json({ error: 'Failed to sign download URL' });
   }
 });
 
 module.exports = router;
+

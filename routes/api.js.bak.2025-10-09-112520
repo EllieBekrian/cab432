@@ -1,33 +1,14 @@
-// ===== core & middleware =====
 const express = require('express');
 const router = express.Router();
+const { authenticateToken, authorizeAdmin } = require('../auth.js');
 const rateLimit = require('express-rate-limit');
-
-// ===== AWS SDK v3 =====
-const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-const {
-  DynamoDBClient,
-  PutItemCommand,
-  GetItemCommand,
-  ScanCommand,
-} = require('@aws-sdk/client-dynamodb');
-
-// ===== Cognito (needed by /login, /register, /confirm) =====
 const {
   CognitoIdentityProviderClient,
   InitiateAuthCommand,
   SignUpCommand,
   ConfirmSignUpCommand,
 } = require('@aws-sdk/client-cognito-identity-provider');
-
-// ===== utils =====
-const mime = require('mime-types');
-const { v4: uuidv4 } = require('uuid');
-
-// ===== local modules =====
 const { loadConfig } = require('../config.js');
-const { authenticateToken, authorizeAdmin } = require('../auth.js');
 const {
   getAllUsers,
   getFileMetadata,
@@ -42,23 +23,13 @@ const {
 } = require('./s3_upload');
 const { getWeatherData } = require('./weather.js');
 
-// ===== env & AWS clients (define FIRST, then use) =====
-const REGION    = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'ap-southeast-2';
-const S3_BUCKET = process.env.S3_BUCKET;
-const DDB_TABLE = process.env.DDB_TABLE;
-
-const s3  = new S3Client({ region: REGION });
-const ddb = new DynamoDBClient({ region: REGION });
-
-// ===== rate limiter for auth endpoints =====
-// موقت: بای‌پس لیمیت برای اینکه سریع بالا بیاد
-const loginLimiter = (req, res, next) => next();
-
-
-// ===== از اینجا به بعد: روترها =====
-
-
-
+// Limit login attempts to prevent brute-force attacks
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: 'Too many attempts from this IP, please try again after 15 minutes.',
+  headers: true,
+});
 
 // Login Route
 router.post('/login', loginLimiter, async (req, res) => {
@@ -95,71 +66,63 @@ router.post('/login', loginLimiter, async (req, res) => {
 
 // Registration Route
 router.post('/register', loginLimiter, async (req, res) => {
-  const { email, password, username } = req.body;
-  // بعضی فرم‌ها فیلد را با نام username می‌فرستند، هر دو را پشتیبانی کنیم
-  const user = email || username;
-
-  if (!user || !password) {
-    return res.status(400).json({ ok: false, code: "BadRequest", message: "Email and password are required." });
-  }
+  const { username, password } = req.body;
 
   try {
-    const client = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
+    const config = await loadConfig();
+    const cognitoClient = new CognitoIdentityProviderClient({
+      region: config.awsRegion, // credentials via IAM Role on EC2
+    });
 
     const params = {
-      ClientId: process.env.COGNITO_CLIENT_ID,
-      Username: user,
+      ClientId: config.cognitoClientId,
+      Username: username,
       Password: password,
-      UserAttributes: [{ Name: "email", Value: user }]
+      UserAttributes: [
+        {
+          Name: 'email',
+          Value: username,
+        },
+      ],
     };
 
-    const out = await client.send(new SignUpCommand(params));
+    const command = new SignUpCommand(params);
+    await cognitoClient.send(command);
 
-    // نکته: در 99% موارد UserConfirmed=false و ایمیل کد ارسال می‌شود.
-    return res.status(200).json({
-      ok: true,
-      userConfirmed: out.UserConfirmed === true,
-      message: out.UserConfirmed
-        ? "Registered & confirmed."
-        : "Verification code sent to your email.",
+    res.json({
+      message: 'Registration successful. Please check your email for the confirmation code.',
     });
   } catch (err) {
-    // خطاهای روتین مثل UsernameExistsException یا InvalidPasswordException را شفاف برگردان
-    const code = err?.name || err?.__type || "UnknownError";
-    const msg  = err?.message || "Unknown error";
-    return res.status(400).json({ ok: false, code, message: msg });
+    console.error('Registration error:', err);
+    res.status(400).json({ error: err.message || 'Registration failed' });
   }
 });
-
 
 // Confirm Sign-Up Route
 router.post('/confirm', async (req, res) => {
-  // هم email/username و هم code/confirmationCode را پشتیبانی کن
-  const emailOrUser = req.body.email || req.body.username;
-  const code        = req.body.code || req.body.confirmationCode;
-
-  if (!emailOrUser || !code) {
-    return res.status(400).json({ ok: false, code: "BadRequest", message: "Email/Username and confirmation code are required." });
-  }
+  const { username, confirmationCode } = req.body;
 
   try {
-    const client = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
+    const config = await loadConfig();
+    const cognitoClient = new CognitoIdentityProviderClient({
+      region: config.awsRegion, // credentials via IAM Role on EC2
+    });
 
     const params = {
-      ClientId: process.env.COGNITO_CLIENT_ID,
-      Username: emailOrUser,
-      ConfirmationCode: code,
+      ClientId: config.cognitoClientId,
+      Username: username,
+      ConfirmationCode: confirmationCode,
     };
 
-    await client.send(new ConfirmSignUpCommand(params));
-    return res.json({ ok: true, message: "Email confirmed. You can log in now." });
-  } catch (err) {
-    const ecode = err?.name || err?.__type || "ConfirmFailed";
-    const msg   = err?.message || "Confirm failed";
-    return res.status(400).json({ ok: false, code: ecode, message: msg });
+    const command = new ConfirmSignUpCommand(params);
+    await cognitoClient.send(command);
+
+    res.status(200).json({ message: 'Verification successful. You can now log in.' });
+  } catch (error) {
+    console.error('Verification error:', error);
+    res.status(400).json({ error: 'Verification failed. Please try again.' });
   }
 });
-
 
 // Admin: Fetch All Files
 router.get('/admin/files', authenticateToken, authorizeAdmin, async (req, res) => {
@@ -234,29 +197,22 @@ router.get('/files', authenticateToken, async (req, res) => {
 });
 
 // Generate presigned URL for uploading files to S3
-router.get('/upload-url', async (req, res) => {
+router.get('/upload-url', authenticateToken, async (req, res) => {
+  const { fileName } = req.query;
+  const username = req.user.username;
+
+  if (!fileName) {
+    return res.status(400).json({ error: 'File name is required.' });
+  }
+
   try {
-    const { filename, contentType, size } = req.query;
-
-    // چک اختیاری برای اطمینان از ورودی‌ها
-    if (!filename || !contentType) {
-      return res.status(400).json({ error: 'Missing required parameters' });
-    }
-
-    // فراخوانی کد presign اصلی‌ات
-    const uploadURL = await getSignedUrl(s3, new PutObjectCommand({
-      Bucket: process.env.S3_BUCKET,
-      Key: `${Date.now()}-${filename}`,
-      ContentType: contentType,
-    }), { expiresIn: 900 });
-
-    res.json({ uploadUrl: uploadURL });
+    const presignedUrl = await generatePresignedUploadUrl(fileName, username);
+    res.status(200).json({ url: presignedUrl });
   } catch (error) {
     console.error('Error generating upload URL:', error);
     res.status(500).json({ error: 'Failed to generate upload URL.' });
   }
 });
-
 
 // Generate presigned URL for downloading files from S3
 router.get('/download-url', authenticateToken, async (req, res) => {
@@ -310,58 +266,5 @@ router.get('/weather', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch weather data' });
   }
 });
-
-
-
-// Public route for presigned upload (no authentication required)
-router.post('/upload/presign', async (req, res) => {
-  try {
-    const { filename, contentType, size } = req.body || {};
-    if (!filename || !contentType) {
-      return res.status(400).json({ error: 'Missing required parameters' });
-    }
-
-    const key = `uploads/${Date.now()}-${filename}`;
-
-    const cmd = new PutObjectCommand({
-      Bucket: process.env.S3_BUCKET,
-      Key: key,
-      ContentType: contentType,
-    });
-
-    const uploadUrl = await getSignedUrl(s3, cmd, { expiresIn: 900 });
-
-    const username = (req.cookies && req.cookies.username) ? req.cookies.username : 'anonymous';
-    const id = uuidv4();
-
-    // --- DynamoDB insert ---
-    try {
-      const putItem = new PutItemCommand({
-        TableName: process.env.DDB_TABLE,
-        Item: {
-          id:          { S: id },
-          username:    { S: username },
-          fileKey:     { S: key },
-          filename:    { S: filename },
-          contentType: { S: contentType },
-          size:        { N: String(Number(size || 0)) },
-          status:      { S: 'pending' },
-          createdAt:   { N: String(Date.now()) },
-        },
-      });
-      await ddb.send(putItem);
-    } catch (ddbErr) {
-      console.warn('⚠️ DynamoDB PutItem failed (continuing):', ddbErr?.name || ddbErr?.message || ddbErr);
-    }
-
-    return res.json({ uploadUrl, fileKey: key, id });
-  } catch (err) {
-    console.error('presign /upload/presign error:', err);
-    return res.status(500).json({ error: 'Failed to generate presigned upload URL' });
-  }
-});
-
-
-
 
 module.exports = router;
