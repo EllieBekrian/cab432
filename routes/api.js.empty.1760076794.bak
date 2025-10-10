@@ -1,5 +1,5 @@
 const express = require('express');
-
+const router = express.Router();
 const { authenticateToken, authorizeAdmin } = require('../auth.js');
 const rateLimit = require('express-rate-limit');
 const {
@@ -9,8 +9,6 @@ const {
   ConfirmSignUpCommand,
 } = require('@aws-sdk/client-cognito-identity-provider');
 const { loadConfig } = require('../config.js');
-const { sseRouter, sseBroadcast } = require('./sse');
-const router = express.Router();
 const {
   getAllUsers,
   getFileMetadata,
@@ -34,7 +32,6 @@ const loginLimiter = rateLimit({
 });
 
 // Login Route
-router.use('/sse', sseRouter);
 router.post('/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body;
 
@@ -175,7 +172,7 @@ router.get('/files', authenticateToken, async (req, res) => {
     console.log('Files retrieved from database: ', files); // Debugging
 
     if (!files.length) {
-      return res.status(404).json({ message: 'No files found for the user.' });
+      return res.status(200).json({ message: 'No files found for the user.' });
     }
 
     const filesWithProgress = await Promise.all(
@@ -269,11 +266,5 @@ router.get('/weather', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch weather data' });
   }
 });
-// Temporary test endpoint for SSE broadcast
-router.post('/sse/test', (req, res) => {
-  sseBroadcast('test', { msg: 'hello from server' });
-  res.json({ ok: true });
-});
-
 
 module.exports = router;

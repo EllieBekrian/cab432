@@ -1,4 +1,5 @@
 // ====== Imports ======
+require('dotenv').config();
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const fileUpload = require("express-fileupload");
@@ -20,10 +21,11 @@ const corsOptions = {
   origin: ["http://localhost:3000", "https://cab432.com", "https://www.cab432.com"],
   credentials: true,
 };
+const SESSION_SECRET = process.env.SESSION_SECRET || 'fallback-secret';
 app.use(cors(corsOptions));
 
 // ====== Body & Cookie Parsers ======
-app.use(cookieParser());
+app.use(cookieParser(SESSION_SECRET));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -82,6 +84,8 @@ const apiRoute = require("./routes/api");
 const webclientRoute = require("./routes/webclient.js");
 const adminRoute = require("./routes/admin.js");
 const uploadRoute = require("./routes/upload.js");
+const { getWeatherData } = require("./routes/weather.js");
+app.use("/weather", getWeatherData);
 
 app.use("/api/v1", apiRoute);
 app.use("/", webclientRoute);

@@ -20,23 +20,42 @@ router.get("/logout", (req, res) => {
     res.clearCookie("username");
     res.redirect("/login"); 
 });
-
 router.use(async (req, res, next) => {
-    const token = req.cookies.token;
-    if (!token) {
-        return res.redirect("/login?redirected=true");
-    }
+  // SSE bypass (allow both v1 and plain)
+  if (
+    (req.originalUrl && (req.originalUrl.startsWith('/api/sse') || req.originalUrl.startsWith('/api/v1/sse'))) ||
+    (req.headers && req.headers.accept && req.headers.accept.includes('text/event-stream'))
+  ) {
+    return next();
+  }
 
-    req.headers.authorization = `Bearer ${token}`; 
-    auth.authenticateToken(req, res, (err) => {
-        if (err) {
-            res.clearCookie("token");
-            res.clearCookie("username");
-            return res.redirect("/login?redirected=true");
-        }
-        next(); 
-    });
+  // Allow upload test endpoints for SSE demo
+  if (
+    (req.originalUrl && req.originalUrl.startsWith('/api/v1/upload/progress')) ||
+    (req.originalUrl && req.originalUrl.startsWith('/api/v1/upload/complete'))
+  ) {
+    return next();
+  }
+
+  // auth check
+  const token = req.cookies && req.cookies.token;
+  if (!token) {
+    return res.redirect('/login?redirected=true');
+  }
+
+  // put token to header and validate
+  req.headers.authorization = `Bearer ${token}`;
+  auth.authenticateToken(req, res, (err) => {
+    if (err) {
+      res.clearCookie('token');
+      res.clearCookie('username');
+      return res.redirect('/login?redirected=true');
+    }
+    next();
+  });
 });
+
+
 
 router.get("/upload", (req, res) => {
     res.sendFile(path.join(__dirname, "../public/upload.html"));

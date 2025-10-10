@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../auth.js');
+const sse = require('./sse');
 const {
   saveUserActivity,
   saveFileMetadata,
@@ -10,6 +11,8 @@ const {
 const { transcodeVideoWithProgress } = require('../transcode');
 
 // Handle upload notification and kick off processing
+router.use(express.json());
+
 router.post('/', auth.authenticateToken, async (req, res) => {
   const { fileName } = req.body;
   const username = req.user.username;
@@ -88,5 +91,27 @@ router.get('/files', auth.authenticateToken, async (req, res) => {
     });
   }
 });
+
+// Report upload progress from client (or uploader)
+router.post('/progress', express.json(), (req, res) => {
+  const { filename, percent } = req.body || {};
+  sse.sseBroadcast('upload-progress', {
+    filename: filename || null,
+    percent: Number(percent) || 0,
+  });
+  res.json({ ok: true });
+});
+
+// Report upload completion
+router.post('/complete', express.json(), (req, res) => {
+  const { filename, key, size } = req.body || {};
+  sse.sseBroadcast('upload-complete', {
+    filename: filename || null,
+    key: key || null,
+    size: Number(size) || null,
+  });
+  res.json({ ok: true });
+});
+
 
 module.exports = router;
